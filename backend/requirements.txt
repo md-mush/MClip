@@ -1,0 +1,25 @@
+# Simplified requirements that work together
+fastapi==0.115.2
+starlette==0.40.0
+uvicorn==0.34.0
+python-dotenv==1.0.0
+aiofiles==24.1.0
+sse-starlette==3.0.2
+openai-whisper==20250625
+ollama==0.6.0
+numpy==1.26.4
+mediapipe==0.10.21
+moviepy==1.0.3
+opencv-python==4.8.1.78
+yt-dlp==2025.7.21
+srt==3.5.3
+srt-equalizer==0.1.10
+sqlalchemy==2.0.44
+asyncpg==0.29.0
+alembic==1.17.0
+greenlet==3.2.4
+setuptools-rust==1.12.0
+Pillow>=10.0.0
+decorator<5.0,>=4.0.2
+tqdm>=4.65.0
+requests>=2.31.0

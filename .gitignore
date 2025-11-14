@@ -1,0 +1,10 @@
+.env.local
+.DS_Store
+__pycache__
+*.egg-info
+logs/
+temp/
+.env
+*.m4a
+backend/venv/
+node_modules/
