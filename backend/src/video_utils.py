@@ -28,6 +28,24 @@ _MOVIEPY_AVAILABLE = None
 _WHISPER_AVAILABLE = None
 _IMAGEMAGICK_AVAILABLE = None
 
+# ---------------------------------------------------------------------------
+# Helper: safe gaussian blur using OpenCV (works with moviepy 1.0.x)
+# ---------------------------------------------------------------------------
+def apply_gaussian_blur(clip, ksize: int = 35):
+    """
+    Apply gaussian blur to a moviepy clip using OpenCV.
+    Falls back to returning the original clip if OpenCV is unavailable.
+    """
+    try:
+        import cv2
+    except Exception:
+        logger.warning("OpenCV not available; skipping blur effect")
+        return clip
+
+    # ksize must be odd and >=3 for GaussianBlur
+    k = max(3, int(ksize) | 1)
+    return clip.fl_image(lambda frame: cv2.GaussianBlur(frame, (k, k), 0))
+
 def _check_executable_in_path(name: str) -> Optional[str]:
     """Return path if executable exists on PATH, else None."""
     path = shutil.which(name)
@@ -195,6 +213,8 @@ _whisper_model_cache = None
 
 def get_video_transcript(video_path: Path) -> str:
     """Get transcript using Whisper model; model loading is cached and lazy."""
+    # Ensure Path object even if caller passed str
+    video_path = Path(video_path)
     whisper_mod = _import_whisper()
     global _whisper_model_cache
 
@@ -284,6 +304,7 @@ def get_video_transcript(video_path: Path) -> str:
         raise
 
 def cache_transcript_data(video_path: Path, transcript_data: dict) -> None:
+    video_path = Path(video_path)
     cache_path = video_path.with_suffix('.transcript_cache.json')
     words_data = []
     if transcript_data.get("segments"):
@@ -310,6 +331,7 @@ def cache_transcript_data(video_path: Path, transcript_data: dict) -> None:
         logger.warning("Failed to write transcript cache to %s: %s", cache_path, e)
 
 def load_cached_transcript_data(video_path: Path) -> Optional[Dict]:
+    video_path = Path(video_path)
     cache_path = video_path.with_suffix('.transcript_cache.json')
     if not cache_path.exists():
         return None
@@ -355,6 +377,45 @@ def round_to_even(value: int) -> int:
     return value - (value % 2)
 
 # Face detection & cropping: keep implementations similar but lazy-import MediaPipe inside function
+def detect_optimal_square_crop_region(video_clip, start_time: float, end_time: float) -> Tuple[int, int, int, int]:
+    """Detect optimal crop region for a square (1:1) aspect ratio, centered on faces."""
+    try:
+        original_width, original_height = video_clip.size
+        # For square crop, use the smaller dimension
+        crop_size = min(original_width, original_height)
+        new_width = round_to_even(crop_size)
+        new_height = round_to_even(crop_size)
+
+        face_centers = detect_faces_in_clip(video_clip, start_time, end_time)
+
+        if face_centers:
+            total_weight = sum(area * confidence for _, _, area, confidence in face_centers)
+            if total_weight > 0:
+                weighted_x = sum(x * area * confidence for x, y, area, confidence in face_centers) / total_weight
+                weighted_y = sum(y * area * confidence for x, y, area, confidence in face_centers) / total_weight
+                x_offset = max(0, min(int(weighted_x - new_width // 2), original_width - new_width))
+                y_offset = max(0, min(int(weighted_y - new_height // 2), original_height - new_height))
+            else:
+                x_offset = (original_width - new_width) // 2 if original_width > new_width else 0
+                y_offset = (original_height - new_height) // 2 if original_height > new_height else 0
+        else:
+            x_offset = (original_width - new_width) // 2 if original_width > new_width else 0
+            y_offset = (original_height - new_height) // 2 if original_height > new_height else 0
+
+        x_offset = round_to_even(x_offset)
+        y_offset = round_to_even(y_offset)
+        return (x_offset, y_offset, new_width, new_height)
+
+    except Exception as e:
+        logger.exception("Error in square crop detection: %s", e)
+        original_width, original_height = video_clip.size
+        crop_size = min(original_width, original_height)
+        new_width = round_to_even(crop_size)
+        new_height = round_to_even(crop_size)
+        x_offset = round_to_even((original_width - new_width) // 2) if original_width > new_width else 0
+        y_offset = round_to_even((original_height - new_height) // 2) if original_height > new_height else 0
+        return (x_offset, y_offset, new_width, new_height)
+
 def detect_optimal_crop_region(video_clip, start_time: float, end_time: float, target_ratio: float = 9/16) -> Tuple[int, int, int, int]:
     try:
         original_width, original_height = video_clip.size
@@ -630,6 +691,7 @@ def create_optimized_clip(
     font_size: int = 24,
     font_color: str = "#FFFFFF"
 ) -> bool:
+    video_path = Path(video_path)
     VideoFileClip, CompositeVideoClip, TextClip, concatenate_videoclips = _import_moviepy()
     video = None
     clip = None
@@ -649,16 +711,46 @@ def create_optimized_clip(
 
         end_time = min(end_time, video.duration)
         clip = video.subclip(start_time, end_time)
-        x_offset, y_offset, new_width, new_height = detect_optimal_crop_region(video, start_time, end_time, target_ratio=9/16)
-        cropped_clip = clip.crop(x1=x_offset, y1=y_offset, x2=x_offset + new_width, y2=y_offset + new_height)
-
-        final_clips = [cropped_clip]
-
+        
+        # Target dimensions: 9:16 vertical format (e.g., 1080x1920 for full HD)
+        target_width = 1080
+        target_height = 1920
+        
+        # Step 1: Crop to square (1:1) aspect ratio, centered on faces
+        x_offset, y_offset, square_width, square_height = detect_optimal_square_crop_region(video, start_time, end_time)
+        square_clip = clip.crop(x1=x_offset, y1=y_offset, x2=x_offset + square_width, y2=y_offset + square_height)
+        
+        # Step 2: Resize square clip to fit within the vertical canvas
+        # The square should fit the width of the canvas
+        square_size = target_width
+        square_clip_resized = square_clip.resize((square_size, square_size))
+        
+        # Step 3: Create blurred background from original clip
+        # Resize original clip to fill the entire 9:16 canvas
+        background_clip = clip.resize((target_width, target_height))
+        # Apply blur effect and remove audio (background should be silent)
+        blurred_background = apply_gaussian_blur(background_clip, ksize=35).without_audio()
+        
+        # Step 4: Position the square video in the center of the vertical canvas
+        # Calculate vertical position to center the square
+        square_y_position = (target_height - square_size) // 2
+        square_clip_positioned = square_clip_resized.set_position(('center', square_y_position))
+        
+        # Step 5: Composite blurred background with square video
+        final_clips = [blurred_background, square_clip_positioned]
+        
+        # Step 6: Add subtitles if requested
         if add_subtitles:
-            subtitle_clips = create_whisper_subtitles(video_path, start_time, end_time, new_width, new_height, font_family, font_size, font_color)
+            subtitle_clips = create_whisper_subtitles(
+                video_path, start_time, end_time, 
+                target_width, target_height,  # Use full canvas dimensions for subtitles
+                font_family, font_size, font_color
+            )
             final_clips.extend(subtitle_clips)
 
-        final_clip = CompositeVideoClip(final_clips) if len(final_clips) > 1 else cropped_clip
+        # Create final composite clip with proper canvas size
+        # Audio will come from square_clip_positioned (the main video)
+        final_clip = CompositeVideoClip(final_clips, size=(target_width, target_height))
 
         tmpf = tempfile.NamedTemporaryFile(prefix="tmp_audio_", suffix=".m4a", delete=False)
         temp_audio = tmpf.name

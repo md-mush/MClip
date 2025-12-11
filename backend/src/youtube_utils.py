@@ -24,10 +24,11 @@ class YouTubeDownloader:
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
     def get_optimal_download_options(self, video_id: str) -> Dict[str, Any]:
-        """Get optimal yt-dlp options for high-quality downloads."""
+        """Get optimal yt-dlp options for high-quality downloads with YouTube bypass and cookie support."""
         output_path = self.temp_dir / f"{video_id}.%(ext)s"
 
-        return {
+        # Base options
+        base_opts = {
             'outtmpl': str(output_path),
             # High quality video + audio selection with fallbacks
             'format': (
@@ -49,6 +50,21 @@ class YouTubeDownloader:
             'quiet': True,
             'no_warnings': False,  # Show warnings but not info
             'ignoreerrors': False,
+            # Add headers to mimic a real browser
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Accept-Encoding': 'gzip,deflate',
+                'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.7',
+                'Connection': 'keep-alive',
+            },
+            # Additional options to bypass restrictions
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web'],
+                }
+            },
             # Post-processing options
             'postprocessors': [{
                 'key': 'FFmpegVideoConvertor',
@@ -58,6 +74,14 @@ class YouTubeDownloader:
             'extract_flat': False,
             'writeinfojson': False,
         }
+
+        # Try to add cookies from Chrome browser (most common)
+        # yt-dlp will attempt to use cookies if available, which helps bypass YouTube's bot detection
+        # If Chrome is not available, yt-dlp will gracefully fall back or the retry logic will handle it
+        base_opts['cookiesfrombrowser'] = ('chrome',)
+        logger.debug("Configured to use cookies from Chrome browser (if available)")
+        
+        return base_opts
 
 def get_youtube_video_id(url: str) -> Optional[str]:
     """
@@ -110,24 +134,76 @@ def get_youtube_video_info(url: str) -> Optional[Dict[str, Any]]:
     """
     Get comprehensive video information without downloading.
     Returns title, duration, description, and other metadata.
+    Enhanced with browser headers, extractor arguments, and cookie support to bypass YouTube restrictions.
     """
     video_id = get_youtube_video_id(url)
     if not video_id:
         logger.error(f"Invalid YouTube URL: {url}")
         return None
 
+    # Base options
+    base_opts = {
+        'quiet': True,
+        'no_warnings': False,
+        'extract_flat': False,
+        'skip_download': True,
+        'socket_timeout': 30,
+        # Add headers to mimic a real browser
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-us,en;q=0.5',
+            'Accept-Encoding': 'gzip,deflate',
+            'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.7',
+            'Connection': 'keep-alive',
+        },
+        # Additional options to bypass restrictions
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web'],
+            }
+        },
+    }
+
+    # Try multiple browsers for cookies (in order of preference)
+    browsers = ['chrome', 'firefox', 'edge', 'opera', 'brave']
+    
+    # First try with cookies from browsers
+    for browser in browsers:
+        try:
+            ydl_opts = base_opts.copy()
+            ydl_opts['cookiesfrombrowser'] = (browser,)
+            logger.debug(f"Attempting to extract video info with {browser} cookies")
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                logger.info(f"Successfully extracted video info using {browser} cookies")
+                
+                return {
+                    'id': info.get('id'),
+                    'title': info.get('title'),
+                    'description': info.get('description', ''),
+                    'duration': info.get('duration'),
+                    'uploader': info.get('uploader'),
+                    'upload_date': info.get('upload_date'),
+                    'view_count': info.get('view_count'),
+                    'like_count': info.get('like_count'),
+                    'thumbnail': info.get('thumbnail'),
+                    'format_id': info.get('format_id'),
+                    'resolution': info.get('resolution'),
+                    'fps': info.get('fps'),
+                    'filesize': info.get('filesize'),
+                }
+        except Exception as e:
+            logger.debug(f"Failed to extract with {browser} cookies: {e}")
+            continue
+
+    # Fallback: try without cookies
     try:
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extractaudio': False,
-            'skip_download': True,
-            'socket_timeout': 15,
-        }
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        logger.warning("Attempting to extract video info without cookies (may fail if YouTube requires authentication)")
+        with yt_dlp.YoutubeDL(base_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-
+            
             return {
                 'id': info.get('id'),
                 'title': info.get('title'),
@@ -143,9 +219,12 @@ def get_youtube_video_info(url: str) -> Optional[Dict[str, Any]]:
                 'fps': info.get('fps'),
                 'filesize': info.get('filesize'),
             }
-
     except Exception as e:
         logger.error(f"Error extracting video info: {e}")
+        logger.error("YouTube requires authentication. Please:")
+        logger.error("1. Open YouTube in your browser (Chrome, Firefox, or Edge)")
+        logger.error("2. Log in to your YouTube account")
+        logger.error("3. Run the script again (it will use cookies from your browser)")
         return None
 
 def get_youtube_video_title(url: str) -> Optional[str]:
