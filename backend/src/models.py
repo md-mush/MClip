@@ -71,10 +71,13 @@ class Source(Base):
 
     def decide_source_type(self, source_url: str) -> str:
       """Decide which type of source this is."""
-      if "youtube" in source_url:
-        return "youtube"
-      else:
-        return "video_url"
+      # Check if it's a URL first
+      if source_url.startswith(('http://', 'https://')):
+          if "youtube.com" in source_url or "youtu.be" in source_url:
+              return "youtube"
+      
+      # Default to video_url (which handles local paths)
+      return "video_url"
 
 class GeneratedClip(Base):
     __tablename__ = "generated_clips"
