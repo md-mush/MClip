@@ -14,6 +14,7 @@ import json
 import tempfile
 import shutil
 import subprocess
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -586,7 +587,9 @@ def create_whisper_subtitles(
     video_height: int,
     font_family: str = "DejaVu-Sans",
     font_size: int = 24,
-    font_color: str = "#FFFFFF"
+    font_color: str = "#FFFFFF",
+    square_y_position: int = None,
+    square_size: int = None
 ) -> List[Any]:
     # Ensure moviepy available
     VideoFileClip, CompositeVideoClip, TextClip, concatenate_videoclips = _import_moviepy()
@@ -624,8 +627,11 @@ def create_whisper_subtitles(
     # Use available fonts - DejaVu is confirmed to be available
     font_arg = "DejaVu-Sans"  # This font is available and works with ImageMagick
     
-    calculated_font_size = max(20, min(40, int(font_size * (video_width / 720))))
-    final_font_size = calculated_font_size
+    # --- Increased font sizing: 1.5× multiplier, min 28, max 64 ---
+    scale_multiplier = 1.5
+    calculated_font_size = int(font_size * (video_width / 720) * scale_multiplier)
+    final_font_size = max(28, min(64, calculated_font_size))
+    # ----------------------------------------------------------------
 
     words_per_subtitle = 3
     
@@ -667,8 +673,15 @@ def create_whisper_subtitles(
                 ).set_duration(segment_duration).set_start(segment_start)
 
             if text_clip is not None:
-                text_height = text_clip.size[1] if getattr(text_clip, "size", None) else 40
-                vertical_position = int(video_height * 0.85)  # Position near bottom
+                text_height = text_clip.size[1] if getattr(text_clip, "size", None) else int(final_font_size * 1.6)
+                # Position subtitles inside the square frame at the bottom
+                if square_y_position is not None and square_size is not None:
+                    # Position at bottom of square with padding (80px from bottom of square)
+                    padding_from_bottom = 80
+                    vertical_position = square_y_position + square_size - padding_from_bottom
+                else:
+                    # Fallback to original positioning if square info not provided
+                    vertical_position = int(video_height * 0.85)
                 text_clip = text_clip.set_position(('center', vertical_position))
                 subtitle_clips.append(text_clip)
             else:
@@ -679,6 +692,7 @@ def create_whisper_subtitles(
 
     logger.info("Created %d subtitle elements from Whisper data", len(subtitle_clips))
     return subtitle_clips
+
 
 # Clip creation - uses moviepy, lazy-imported
 def create_optimized_clip(
@@ -744,7 +758,9 @@ def create_optimized_clip(
             subtitle_clips = create_whisper_subtitles(
                 video_path, start_time, end_time, 
                 target_width, target_height,  # Use full canvas dimensions for subtitles
-                font_family, font_size, font_color
+                font_family, font_size, font_color,
+                square_y_position=square_y_position,  # Pass square position for subtitle positioning
+                square_size=square_size  # Pass square size for subtitle positioning
             )
             final_clips.extend(subtitle_clips)
 
@@ -1000,3 +1016,164 @@ def create_clips_with_transitions(
     
     logger.info(f"Successfully created {len(enhanced_clips)} clips with transitions")
     return enhanced_clips
+
+def split_video_by_duration(video_path: Path, duration_seconds: int, output_dir: Path):
+    from moviepy.editor import VideoFileClip
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    clips_info = []
+
+    with VideoFileClip(str(video_path)) as probe:
+        total_duration = probe.duration
+
+    current_start = 0.0
+    clip_count = 0
+
+    while current_start < total_duration:
+        current_end = min(current_start + duration_seconds, total_duration)
+        clip_duration = current_end - current_start
+
+        if clip_duration <= 0:
+            break
+
+        clip_count += 1
+        clip_filename = f"clip_{clip_count:04d}_{current_start:.1f}s-{current_end:.1f}s.mp4"
+        clip_path = output_dir / clip_filename
+
+        logger.info(
+            f"Creating clip {clip_count}: "
+            f"{current_start:.2f}s - {current_end:.2f}s ({clip_duration:.2f}s)"
+        )
+
+        try:
+            video = VideoFileClip(str(video_path))
+            clip = video.subclip(current_start, current_end)
+
+            clip.write_videofile(
+                str(clip_path),
+                codec="libx264",
+                audio_codec="aac",
+                preset="medium",
+                ffmpeg_params=["-pix_fmt", "yuv420p"],
+                logger=None,
+                verbose=False
+            )
+
+            clips_info.append({
+                "clip_number": clip_count,
+                "filename": clip_filename,
+                "path": str(clip_path),
+                "start_time": current_start,
+                "end_time": current_end,
+                "duration": clip_duration
+            })
+
+            logger.info(f"✅ Created clip {clip_count}: {clip_filename}")
+
+        except Exception as e:
+            logger.error(f"❌ Error creating clip {clip_count}: {e}")
+
+        finally:
+            try:
+                clip.close()
+                video.close()
+            except Exception:
+                pass
+            current_start = current_end
+
+    return clips_info
+
+def split_video_by_duration_ffmpeg(
+    video_path: Path,
+    duration_seconds: int,
+    output_dir: Path
+) -> List[Dict[str, Any]]:
+    """
+    Split video using pure ffmpeg (safe for Colab / long videos)
+    """
+    video_path = Path(video_path)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Get duration using ffprobe
+    probe_cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(video_path)
+    ]
+
+    result = subprocess.run(
+        probe_cmd,
+        capture_output=True,
+        text=True
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {result.stderr}")
+
+    total_duration = float(result.stdout.strip())
+    logger.info(f"Video duration: {total_duration:.2f} seconds")
+
+    clips_info = []
+    clip_count = 0
+    current_start = 0.0
+
+    while current_start < total_duration:
+        clip_count += 1
+        current_end = min(current_start + duration_seconds, total_duration)
+        clip_duration = current_end - current_start
+
+        clip_filename = (
+            f"clip_{clip_count:04d}_"
+            f"{current_start:.1f}s-{current_end:.1f}s.mp4"
+        )
+        clip_path = output_dir / clip_filename
+
+        logger.info(
+            f"Creating clip {clip_count}: "
+            f"{current_start:.2f}s - {current_end:.2f}s"
+        )
+
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-y",
+            "-ss", f"{current_start}",
+            "-i", str(video_path),
+            "-t", f"{clip_duration}",
+            "-map", "0:v:0",
+            "-map", "0:a?",
+            "-c:v", "libx264",
+            "-preset", "medium",
+            "-crf", "20",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-movflags", "+faststart",
+            str(clip_path)
+        ]
+
+        process = subprocess.run(
+            ffmpeg_cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        if process.returncode != 0:
+            logger.error(
+                f"ffmpeg failed for clip {clip_count}: {process.stderr}"
+            )
+        else:
+            clips_info.append({
+                "clip_number": clip_count,
+                "filename": clip_filename,
+                "path": str(clip_path),
+                "start_time": current_start,
+                "end_time": current_end,
+                "duration": clip_duration
+            })
+            logger.info(f"✅ Created clip {clip_count}")
+
+        current_start = current_end
+
+    return clips_info
