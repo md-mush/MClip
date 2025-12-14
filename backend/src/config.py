@@ -17,6 +17,6 @@ class Config:
         
         # Ollama configuration (for AI analysis)
         self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.ollama_model = os.getenv("OLLAMA_MODEL", "llama3:8b")
+        self.ollama_model = os.getenv("OLLAMA_MODEL", "llama3.1:8b-instruct-q6_K")
         
         logger.info(f"✅ Config loaded - Whisper: {self.whisper_model}, Ollama: {self.ollama_model}")

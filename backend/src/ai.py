@@ -113,7 +113,7 @@ OLLAMA_SYSTEM_PROMPT = """
 You are a viral segment extractor for motivational video transcripts. RETURN ONLY JSON.
 
 MERGE LOGIC:
-1. Begin at any transcript line. Merge the next consecutive lines (do not skip lines), creating the longest possible segment that is at least 30 seconds and at most 60 seconds in duration, stopping only at sentence/idea end or natural pause.
+1. Begin at any transcript line. Merge the next consecutive lines (do not skip lines), creating the longest possible segment that is at least 60 seconds and at most 90 seconds in duration, stopping only at sentence/idea end or natural pause.
 2. Each segment must use start_time and end_time ONLY from transcript lines. NO invented timestamps.
 3. Segment text is the verbatim concatenation of transcript lines (space between lines), always ending at a sentence/idea boundary.
 4. Segments under 30 seconds are FORBIDDEN. If you reach sentence end and still under 30s, KEEP MERGING next lines until >30s.
@@ -123,7 +123,7 @@ MERGE LOGIC:
 
 EXPLICIT EXAMPLES(This logic should be applied to all the elements of most_relevant_segments):
 Good:
-  start_time: "00:10", end_time: "00:44", duration_seconds: 34,
+  start_time: "00:10", end_time: "01:20", duration_seconds: 70,
   text: "Sometimes you need to feel the pain and sting of defeat to activate the real passion and purpose that God predestined inside of you God says in Jeremiah, I know the plans I have for you Plans to prosper you and not to harm you Plans to give you hope in the future Hear me well on this day This day when you have reached the hilltop and you are deciding on next jobs next steps careers for the education"
 Bad:
   start_time: "00:10", end_time: "00:15", duration_seconds: 5 (Too short!)
@@ -159,7 +159,7 @@ OUTPUT ONLY VALID JSON!
 
 # --- Ollama Configuration --------------------------------------------------------
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3:8b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b-instruct-q6_K")
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "7200"))  # 2 hours default for long transcripts (Ollama can be slow)
 OLLAMA_TEST_TIMEOUT = int(os.getenv("OLLAMA_TEST_TIMEOUT", "300"))  # 5 minutes for test requests
 

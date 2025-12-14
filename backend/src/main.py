@@ -638,3 +638,106 @@ async def upload_video(request: Request):
     except Exception as e:
         logger.error(f"❌ Error uploading video: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error uploading video: {str(e)}")
+
+@app.post("/split-video")
+async def split_video(request: Request):
+    """Split a video into multiple clips of specified duration"""
+    try:
+        data = await request.json()
+        video_path = data.get("video_path")
+        duration_seconds = data.get("duration")
+        
+        if not video_path:
+            raise HTTPException(status_code=400, detail="video_path is required")
+        
+        if not duration_seconds:
+            raise HTTPException(status_code=400, detail="duration is required")
+        
+        try:
+            duration_seconds = int(duration_seconds)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="duration must be a positive integer")
+        
+        if duration_seconds <= 0:
+            raise HTTPException(status_code=400, detail="duration must be a positive integer")
+        
+        video_path_obj = Path(video_path)
+        if not video_path_obj.exists():
+            raise HTTPException(status_code=404, detail=f"Video file not found: {video_path}")
+        
+        logger.info(f"📹 Splitting video: {video_path} into clips of {duration_seconds} seconds")
+        
+        # Create output directory for split clips
+        split_output_dir = Path(config.temp_dir) / "split_clips"
+        split_output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate unique subdirectory for this split operation
+        import uuid
+        unique_id = uuid.uuid4().hex[:8]
+        output_dir = split_output_dir / unique_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Split the video
+        # clips_info = split_video_by_duration(video_path_obj, duration_seconds, output_dir)
+        # from .video_utils import split_video_by_duration_ffmpeg
+        clips_info = split_video_by_duration_ffmpeg(video_path_obj,duration_seconds,output_dir)
+
+        if not clips_info or len(clips_info) == 0:
+            raise HTTPException(status_code=500, detail="Failed to split video - no clips were created")
+        
+        logger.info(f"✅ Successfully split video into {len(clips_info)} clips")
+        
+        # Prepare response with clip URLs
+        clips_response = []
+        for clip_info in clips_info:
+            # Create a URL-friendly path (relative to clips mount point)
+            # We'll need to serve these from a different endpoint or move them to clips directory
+            clip_filename = clip_info["filename"]
+            clips_response.append({
+                "clip_number": clip_info["clip_number"],
+                "filename": clip_filename,
+                "path": str(clip_info["path"]),
+                "start_time": clip_info["start_time"],
+                "end_time": clip_info["end_time"],
+                "duration": clip_info["duration"],
+                "download_url": f"/download-split-clip/{unique_id}/{clip_filename}"
+            })
+        
+        return {
+            "message": "Video split successfully",
+            "total_clips": len(clips_info),
+            "duration_per_clip_seconds": duration_seconds,
+            "output_directory": str(output_dir),
+            "clips": clips_response
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error splitting video: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error splitting video: {str(e)}")
+
+@app.get("/download-split-clip/{unique_id}/{filename}")
+async def download_split_clip(unique_id: str, filename: str):
+    """Download a split clip file"""
+    try:
+        split_output_dir = Path(config.temp_dir) / "split_clips" / unique_id
+        clip_path = split_output_dir / filename
+        
+        if not clip_path.exists():
+            raise HTTPException(status_code=404, detail="Clip file not found")
+        
+        if not clip_path.is_file():
+            raise HTTPException(status_code=400, detail="Invalid clip path")
+        
+        return FileResponse(
+            path=str(clip_path),
+            filename=filename,
+            media_type="video/mp4"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error downloading clip: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error downloading clip: {str(e)}")
+
