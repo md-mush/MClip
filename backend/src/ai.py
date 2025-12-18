@@ -110,27 +110,67 @@ class TranscriptAnalysis:
 # --- System prompt for Ollama ---------------------------------------------------
  
 OLLAMA_SYSTEM_PROMPT = """
-You are a viral segment extractor for motivational video transcripts. RETURN ONLY JSON.
+You are a PROFESSIONAL YouTube Shorts and Reels clipper.
 
-MERGE LOGIC:
-1. Begin at any transcript line. Merge the next consecutive lines (do not skip lines), creating the longest possible segment that is at least 60 seconds and at most 90 seconds in duration, stopping only at sentence/idea end or natural pause.
-2. Each segment must use start_time and end_time ONLY from transcript lines. NO invented timestamps.
-3. Segment text is the verbatim concatenation of transcript lines (space between lines), always ending at a sentence/idea boundary.
-4. Segments under 30 seconds are FORBIDDEN. If you reach sentence end and still under 30s, KEEP MERGING next lines until >30s.
-5. Segments must never cut mid-sentence, must not be a single line, and never under 30s.
-6. Select at least 3 segments if possible. If not possible, output empty list with an error explaining why.
-7. duration_seconds = end_time (in seconds) - start_time (in seconds).
+You specialize in clipping movies, sitcoms, and long-form entertainment videos into SHORT, VIRAL, HIGH-RETENTION clips that make viewers want to watch the full scene.
 
-EXPLICIT EXAMPLES(This logic should be applied to all the elements of most_relevant_segments):
-Good:
-  start_time: "00:10", end_time: "01:20", duration_seconds: 70,
-  text: "Sometimes you need to feel the pain and sting of defeat to activate the real passion and purpose that God predestined inside of you God says in Jeremiah, I know the plans I have for you Plans to prosper you and not to harm you Plans to give you hope in the future Hear me well on this day This day when you have reached the hilltop and you are deciding on next jobs next steps careers for the education"
-Bad:
-  start_time: "00:10", end_time: "00:15", duration_seconds: 5 (Too short!)
-  start_time: "00:29", end_time: "00:32", duration_seconds: 3 (Too short!)
-(Segments like these are NOT allowed.)
+You are given a transcript with timestamps. RETURN ONLY VALID JSON.
 
-OUTPUT THIS JSON SCHEMA ONLY:
+YOUR GOAL:
+- Find EXACTLY **2 viral segments**
+- Segments must be ENTERTAINING, FUNNY, or HIGHLY ENGAGING
+- Clips should feel like a COMPLETE CONVERSATION or SCENE MOMENT
+- The viewer should feel curiosity, humor, or anticipation by the end
+
+──────────────── MERGE LOGIC ────────────────
+1. Start at any transcript line.
+2. Merge ONLY consecutive lines (never skip lines).
+3. Create the LONGEST possible segment that is:
+   - at least **60 seconds**
+   - at most **90 seconds**
+4. Stop merging ONLY at:
+   - a natural conversational stop
+   - a clear punchline
+   - or a scene/idea conclusion
+5. NEVER cut:
+   - mid-sentence
+   - mid-conversation
+   - mid-joke setup/payoff
+6. Segment text MUST be the verbatim concatenation of transcript lines (space-separated).
+7. start_time and end_time MUST come directly from transcript timestamps (NO invention).
+8. duration_seconds = end_time (seconds) − start_time (seconds).
+9. Segments under **60 seconds are **FORBIDDEN**.
+
+──────────────── SELECTION RULES ────────────────
+- Select EXACTLY **2 segments**
+- Prefer:
+  • escalating banter
+  • repeated jokes or chants
+  • character clashes
+  • absurd confidence moments
+  • reactions from multiple characters
+- Each segment MUST feel complete and satisfying on its own.
+
+──────────────── HOOK REQUIREMENT (VERY IMPORTANT) ────────────────
+The "reasoning" field is NOT analysis.
+
+It must be:
+- ONE single sentence
+- Written as a SCROLL-STOPPING HOOK
+- Designed to be placed ABOVE the video frame
+- Teasing, funny, or curiosity-driven
+- NO explanation language
+
+Good hook examples:
+- "He thought drinking would fix it… it made everything worse."
+- "This confidence aged horribly in under 90 seconds."
+- "They encouraged him — and immediately regretted it."
+
+Bad examples:
+- "This segment is engaging because…"
+- "This clip shows character development…"
+
+──────────────── OUTPUT FORMAT (JSON ONLY) ────────────────
 {{
   "most_relevant_segments": [
     {{
@@ -138,23 +178,32 @@ OUTPUT THIS JSON SCHEMA ONLY:
       "end_time": "MM:SS",
       "duration_seconds": <integer>,
       "text": "verbatim merged transcript",
-      "relevance_score": <float 0.7-1.0>,
-      "reasoning": "1-2 sentences why viral"
+      "relevance_score": <float between 0.7 and 1.0>,
+      "reasoning": "ONE hook-style sentence"
+    }},
+    {{
+      "start_time": "MM:SS",
+      "end_time": "MM:SS",
+      "duration_seconds": <integer>,
+      "text": "verbatim merged transcript",
+      "relevance_score": <float between 0.7 and 1.0>,
+      "reasoning": "ONE hook-style sentence"
     }}
-    // Repeat for each merged segment, minimum 3 if possible
   ],
-  "summary": "Motivational video arc summary.",
-  "key_topics": ["Purpose", "Motivation"]
+  "summary": "One-line description of the scene’s comedic arc.",
+  "key_topics": ["Comedy", "Conversation", "Viral Moment"]
 }}
-If not possible:
+
+If EXACTLY 2 valid segments cannot be created:
 {{
   "most_relevant_segments": [],
-  "error": "Transcript too short or fragmented for 3 merged segments"
+  "error": "Transcript does not contain two complete 60–90s conversational segments"
 }}
+
 TRANSCRIPT:
 {transcript}
 
-OUTPUT ONLY VALID JSON!
+RETURN ONLY VALID JSON. NO EXTRA TEXT.
 """
 
 # --- Ollama Configuration --------------------------------------------------------
@@ -446,9 +495,9 @@ def call_ollama(prompt: str, max_retries: int = 3) -> Optional[str]:
     return None
 
 # --- Constants and Helpers ------------------------------------------------------
-MIN_SEGMENT_DURATION = 30  # 30 seconds minimum for viral clips
-MAX_SEGMENT_DURATION = 60  # 60 seconds maximum (1 minute)
-MIN_SEGMENTS = 3
+MIN_SEGMENT_DURATION = 60  # 30 seconds minimum for viral clips
+MAX_SEGMENT_DURATION = 120  # 60 seconds maximum (1 minute)
+MIN_SEGMENTS = 2
 MAX_SEGMENTS = 5  # Reduced to 5 for faster processing
 
 def extract_json_from_text(text: str) -> Optional[dict]:
