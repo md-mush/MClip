@@ -341,7 +341,7 @@ async def update_task_status(task_id: str, status: str):
         )
         await db.commit()
 
-async def process_video_task(task_id: str, raw_source: dict, user_id: str, font_family: str = "TikTokSans-Regular", font_size: int = 24, font_color: str = "#FFFFFF"):
+async def process_video_task(task_id: str, raw_source: dict, user_id: str, font_family: str = "TikTokSans-Regular", font_size: int = 24, font_color: str = "##FFFF00"):
     """Background task to process video and update task status"""
 
     try:

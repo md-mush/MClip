@@ -84,9 +84,9 @@ def _check_imagemagick_availability():
     
     # Test MoviePy TextClip with ImageMagick
     try:
-        VideoFileClip, CompositeVideoClip, TextClip, concatenate_videoclips = _import_moviepy()
+        VideoFileClip, CompositeVideoClip, TextClip, concatenate_videoclips, _ = _import_moviepy()
         # Simple test without complex parameters
-        test_clip = TextClip(txt="test", fontsize=20, color='white')
+        test_clip = TextClip(txt="test", fontsize=20, color='yellow')
         test_clip.close()
         _IMAGEMAGICK_AVAILABLE = True
         logger.debug("ImageMagick TextClip functionality confirmed")
@@ -130,19 +130,19 @@ def _import_moviepy():
     if _MOVIEPY_AVAILABLE is not None:
         if _MOVIEPY_AVAILABLE:
             # import lazily again to return actual classes
-            from moviepy.editor import VideoFileClip, CompositeVideoClip, TextClip, concatenate_videoclips
-            return VideoFileClip, CompositeVideoClip, TextClip, concatenate_videoclips
+            from moviepy.editor import VideoFileClip, CompositeVideoClip, TextClip, concatenate_videoclips, ColorClip
+            return VideoFileClip, CompositeVideoClip, TextClip, concatenate_videoclips, ColorClip
         raise RuntimeError("MoviePy marked unavailable")
 
     try:
         # Try canonical v2 import
-        from moviepy.editor import VideoFileClip, CompositeVideoClip, TextClip, concatenate_videoclips
+        from moviepy.editor import VideoFileClip, CompositeVideoClip, TextClip, concatenate_videoclips, ColorClip
         _MOVIEPY_AVAILABLE = True
         
         # Check ImageMagick availability after MoviePy import
         _check_imagemagick_availability()
         
-        return VideoFileClip, CompositeVideoClip, TextClip, concatenate_videoclips
+        return VideoFileClip, CompositeVideoClip, TextClip, concatenate_videoclips, ColorClip
     except Exception as e:
         _MOVIEPY_AVAILABLE = False
         _warn_missing_system_deps()
@@ -587,12 +587,12 @@ def create_whisper_subtitles(
     video_height: int,
     font_family: str = "DejaVu-Sans",
     font_size: int = 24,
-    font_color: str = "#FFFFFF",
+    font_color: str = "##FFFF00",
     square_y_position: int = None,
     square_size: int = None
 ) -> List[Any]:
     # Ensure moviepy available
-    VideoFileClip, CompositeVideoClip, TextClip, concatenate_videoclips = _import_moviepy()
+    VideoFileClip, CompositeVideoClip, TextClip, concatenate_videoclips, _ = _import_moviepy()
     
     transcript_data = load_cached_transcript_data(video_path)
     if not transcript_data or not transcript_data.get('words'):
@@ -703,10 +703,11 @@ def create_optimized_clip(
     add_subtitles: bool = True,
     font_family: str = "DejaVu-Sans",
     font_size: int = 24,
-    font_color: str = "#FFFFFF"
+    font_color: str = "##FFFF00",
+    reasoning: str = None
 ) -> bool:
     video_path = Path(video_path)
-    VideoFileClip, CompositeVideoClip, TextClip, concatenate_videoclips = _import_moviepy()
+    VideoFileClip, CompositeVideoClip, TextClip, concatenate_videoclips, ColorClip = _import_moviepy()
     video = None
     clip = None
     final_clip = None
@@ -752,6 +753,50 @@ def create_optimized_clip(
         
         # Step 5: Composite blurred background with square video
         final_clips = [blurred_background, square_clip_positioned]
+        
+        # Step 5.5: Add reasoning text overlay above the square frame if provided
+        # Step 5.5: Add reasoning text overlay above the square frame
+        if reasoning and reasoning.strip():
+            try:
+                reasoning_font_size = int(font_size * (target_width / 720) * 1.5)
+                reasoning_font_size = max(28, min(42, reasoning_font_size))
+
+                font_arg = font_family if font_family != "DejaVu-Sans" else "DejaVu-Sans"
+
+                background_width = target_width
+                vertical_padding = 30
+
+                reasoning_text_clip = TextClip(
+                    txt=reasoning.strip(),
+                    fontsize=reasoning_font_size,
+                    font=font_arg,
+                    color="black",
+                    method="caption",
+                    size=(background_width - 120, None),
+                    align="center"
+                ).set_duration(duration)
+
+                text_width, text_height = reasoning_text_clip.size
+                background_height = text_height + vertical_padding
+
+                reasoning_bg = ColorClip(
+                    size=(background_width, background_height),
+                    color=(255, 255, 255),
+                    duration=duration
+                )
+
+                gap_above_square = 20
+                reasoning_y_position = square_y_position - background_height - gap_above_square
+
+                reasoning_bg = reasoning_bg.set_position(("center", reasoning_y_position))
+                reasoning_text_clip = reasoning_text_clip.set_position(("center", reasoning_y_position))
+
+                final_clips.append(reasoning_bg)
+                final_clips.append(reasoning_text_clip)
+
+            except Exception as e:
+                logger.warning(f"Failed to add reasoning overlay: {e}")
+                # Continue without reasoning overlay if it fails
         
         # Step 6: Add subtitles if requested
         if add_subtitles:
@@ -824,7 +869,7 @@ def create_clips_from_segments(
     output_dir: Path, 
     font_family: str = "DejaVu-Sans", 
     font_size: int = 24, 
-    font_color: str = "#FFFFFF"
+    font_color: str = "##FFFF00"
 ) -> List[Dict[str, Any]]:
     """Create optimized video clips from segments."""
     logger.info(f"Creating {len(segments)} clips")
@@ -849,7 +894,9 @@ def create_clips_from_segments(
             clip_filename = f"clip_{i+1}_{segment['start_time'].replace(':', '')}-{segment['end_time'].replace(':', '')}.mp4"
             clip_path = output_dir / clip_filename
             
-            success = create_optimized_clip(video_path, start_seconds, end_seconds, clip_path, True, font_family, font_size, font_color)
+            # Get reasoning from segment if available
+            reasoning = segment.get('reasoning', None)
+            success = create_optimized_clip(video_path, start_seconds, end_seconds, clip_path, True, font_family, font_size, font_color, reasoning=reasoning)
             
             if success:
                 clip_info = {
@@ -890,7 +937,7 @@ def get_available_transitions() -> List[str]:
 
 def apply_transition_effect(clip1_path: Path, clip2_path: Path, transition_path: Path, output_path: Path) -> bool:
     """Apply transition effect between two clips using a transition video."""
-    VideoFileClip, CompositeVideoClip, TextClip, concatenate_videoclips = _import_moviepy()
+    VideoFileClip, CompositeVideoClip, TextClip, concatenate_videoclips, _ = _import_moviepy()
     
     try:
         # Load clips
@@ -954,7 +1001,7 @@ def create_clips_with_transitions(
     output_dir: Path, 
     font_family: str = "DejaVu-Sans", 
     font_size: int = 24, 
-    font_color: str = "#FFFFFF"
+    font_color: str = "##FFFF00"
 ) -> List[Dict[str, Any]]:
     """Create video clips with transition effects between them."""
     logger.info(f"Creating {len(segments)} clips with transitions")
